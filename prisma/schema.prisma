@@ -1,31 +1,28 @@
-// prisma/schema.prisma
-
-// 1. บอก Prisma ว่าเราจะใช้ JavaScript Client
 generator client {
   provider = "prisma-client-js"
 }
 
-// 2. บอกว่าเราจะใช้ฐานข้อมูล PostgreSQL (ซึ่ง Railway ใช้อันนี้)
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// 3. ตารางเก็บข้อมูล User (สำคัญมากสำหรับการจำ State)
 model User {
-  id         Int      @id @default(autoincrement()) // รหัสลำดับ 1, 2, 3...
-  telegramId BigInt   @unique                       // ไอดี Telegram ของ User (ตัวเลขมันเยอะต้องใช้ BigInt)
-  username   String?                                // ชื่อ User (เก็บไว้ดูเล่น เผื่อติดต่อกลับ)
-  state      String   @default("IDLE")              // "สถานะปัจจุบัน" ว่าทำอะไรอยู่ (เช่น WAITING_CONTENT)
-  draft      String?                                // "กระดาษทด" เก็บข้อความที่ร่างไว้ ก่อนกดยืนยัน
-  createdAt  DateTime @default(now())               // วันที่เริ่มใช้งาน
+  id               Int      @id @default(autoincrement())
+  telegramId       BigInt   @unique
+  username         String?
+  state            String   @default("IDLE") // IDLE, WAITING_FORWARD, WAITING_CONTENT, WAITING_BUTTONS
+  draft            String?
+  selectedChannelId String? // จำว่า User กำลังจะโพสต์ลง Channel ไหน
+  channels         Channel[] // ความสัมพันธ์: User คนนี้เป็นเจ้าของกี่ Channel
+  createdAt        DateTime @default(now())
 }
 
-// 4. ตารางเก็บ Post (สำหรับเก็บประวัติ หรือทำฟีเจอร์ตั้งเวลาโพสต์ในอนาคต)
-model Post {
-  id        Int      @id @default(autoincrement())
-  content   String                                // เนื้อหาโพสต์
-  buttons   String?                               // ปุ่มต่างๆ (เก็บเป็น Text ยาวๆ)
-  ownerId   BigInt                                // เจ้าของโพสต์คือใคร (Link กับ telegramId)
-  createdAt DateTime @default(now())
+model Channel {
+  id          String   @id @default(uuid())
+  telegramId  BigInt   @unique // ID ของ Channel จริงๆ (เช่น -10012345678)
+  title       String   // ชื่อ Channel
+  addedById   Int
+  addedBy     User     @relation(fields: [addedById], references: [id])
+  createdAt   DateTime @default(now())
 }
