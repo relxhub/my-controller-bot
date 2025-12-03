@@ -11,18 +11,27 @@ model User {
   id               Int      @id @default(autoincrement())
   telegramId       BigInt   @unique
   username         String?
-  state            String   @default("IDLE") // IDLE, WAITING_FORWARD, WAITING_CONTENT, WAITING_BUTTONS
+  state            String   @default("IDLE")
   draft            String?
-  selectedChannelId String? // จำว่า User กำลังจะโพสต์ลง Channel ไหน
-  channels         Channel[] // ความสัมพันธ์: User คนนี้เป็นเจ้าของกี่ Channel
+  selectedChannelId String?
+  channels         Channel[]
   createdAt        DateTime @default(now())
 }
 
 model Channel {
   id          String   @id @default(uuid())
-  telegramId  BigInt   @unique // ID ของ Channel จริงๆ (เช่น -10012345678)
-  title       String   // ชื่อ Channel
+  telegramId  BigInt   @unique
+  title       String
   addedById   Int
   addedBy     User     @relation(fields: [addedById], references: [id])
+  createdAt   DateTime @default(now())
+}
+
+model ScheduledPost {
+  id          Int      @id @default(autoincrement())
+  channelId   BigInt
+  data        String
+  postAt      DateTime
+  submittedBy BigInt
   createdAt   DateTime @default(now())
 }
