@@ -143,6 +143,7 @@ bot.on('text', async (ctx) => {
 
 // เมื่อกดปุ่ม "โพสต์เลย"
 bot.action('BTN_CONFIRM', async (ctx) => {
+  if (!ctx.from) return;  
   // แจ้งเตือนว่ารับทราบแล้ว
   await ctx.answerCbQuery('กำลังโพสต์...');
   
@@ -166,6 +167,7 @@ bot.action('BTN_CONFIRM', async (ctx) => {
 
 // เมื่อกดปุ่ม "ยกเลิก"
 bot.action('BTN_CANCEL', async (ctx) => {
+  if (!ctx.from) return;  
   await ctx.answerCbQuery('ยกเลิกแล้ว');
   await ctx.reply('❌ ยกเลิกการสร้างโพสต์เรียบร้อย');
   // ไม่ต้องทำอะไรกับ DB เพราะ State เป็น IDLE อยู่แล้ว
