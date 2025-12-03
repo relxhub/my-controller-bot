@@ -22,12 +22,22 @@ async function getOrCreateUser(ctx: any) {
   return user;
 }
 
+// ฟังก์ชันแปลงข้อความเวลา และลบ 7 ชั่วโมงสำหรับ Server (ถ้าไม่ได้ตั้งค่า TZ ใน Railway)
 function parseDateTime(text: string): Date | null {
     try {
         const [datePart, timePart] = text.split(' ');
         const [day, month, year] = datePart.split('/').map(Number);
         const [hour, minute] = timePart.split(':').map(Number);
+        
+        // สร้าง Date (ปรับเวลาให้ตรงกับไทย หาก Server เป็น UTC)
+        // ถ้าคุณตั้งค่า TZ=Asia/Bangkok ใน Railway แล้ว ให้ใช้ new Date(year, month-1, day, hour, minute) ปกติ
+        // แต่เพื่อความชัวร์ ใช้แบบ UTC แล้วลบ offset เอาดีกว่า
+        // UTC+7 (ไทย) -> UTC 0 (Server) ต้องลบ 7 ชม.
+        
+        // *หมายเหตุ:* ถ้าตั้งตัวแปร TZ ใน Railway แล้ว โค้ดนี้อาจจะทำให้เวลาเพี้ยนได้
+        // ดังนั้นผมแนะนำให้ใช้รูปแบบมาตรฐานและให้ Railway จัดการ TZ
         const date = new Date(year, month - 1, day, hour, minute);
+        
         if (isNaN(date.getTime())) return null;
         return date;
     } catch {
@@ -46,7 +56,6 @@ cron.schedule('* * * * *', async () => {
         try {
             const data = JSON.parse(task.data);
             
-            // ตรวจสอบว่ามีปุ่มไหม
             const extraOptions: any = { parse_mode: 'Markdown' };
             if (data.buttons) {
                 extraOptions.reply_markup = data.buttons;
@@ -61,12 +70,14 @@ cron.schedule('* * * * *', async () => {
                 await bot.telegram.sendMessage(Number(task.channelId), data.content, extraOptions);
             }
 
+            // แจ้งเตือนเจ้าของ
             await bot.telegram.sendMessage(Number(task.submittedBy), `✅ โพสต์งาน ID: ${task.id} เรียบร้อยแล้วครับ!`);
 
         } catch (error) {
             console.error(`Failed to send task ${task.id}:`, error);
         }
 
+        // ลบออกจากคิว
         await prisma.scheduledPost.delete({ where: { id: task.id } });
     }
 });
@@ -74,6 +85,7 @@ cron.schedule('* * * * *', async () => {
 // --- Menus ---
 const mainMenu = Markup.inlineKeyboard([
   [Markup.button.callback('📝 สร้างโพสต์ใหม่ (Create)', 'MENU_CREATE')],
+  [Markup.button.callback('⏳ รายการที่ตั้งเวลาไว้ (Scheduled)', 'MENU_SCHEDULED')], // <-- ปุ่มใหม่
   [Markup.button.callback('📢 จัดการแชนแนล (Channels)', 'MENU_CHANNELS')],
   [Markup.button.callback('❓ วิธีใช้งาน', 'MENU_HELP')]
 ]);
@@ -91,7 +103,74 @@ bot.start(async (ctx) => {
 
 bot.action('MENU_HELP', async (ctx) => {
     if (!ctx.from) return;
-    await ctx.reply('💡 **วิธีใช้งาน:**\n1. กด "จัดการแชนแนล" เพื่อเพิ่ม Channel (ต้องดึงบอทเข้าและเป็น Admin ก่อน)\n2. กด "สร้างโพสต์ใหม่" เพื่อเริ่มโพสต์\n3. สามารถส่งได้ทั้งข้อความและรูปภาพ\n4. ตั้งเวลาโพสต์ได้โดยเลือก "ตั้งเวลาโพสต์" ในขั้นตอนสุดท้าย');
+    await ctx.reply('💡 **วิธีใช้งาน:**\n1. กด "จัดการแชนแนล" เพื่อเพิ่ม Channel\n2. กด "สร้างโพสต์ใหม่" เพื่อเริ่มโพสต์\n3. กด "รายการที่ตั้งเวลาไว้" เพื่อดูลบโพสต์ที่รอคิว');
+    await ctx.answerCbQuery();
+});
+
+// --- [NEW] Scheduled Posts Management ---
+bot.action('MENU_SCHEDULED', async (ctx) => {
+    if (!ctx.from) return;
+    const user = await getOrCreateUser(ctx);
+
+    // ดึงรายการที่ user คนนี้ตั้งไว้ โดยเรียงตามเวลา
+    const posts = await prisma.scheduledPost.findMany({
+        where: { submittedBy: BigInt(ctx.from.id) },
+        orderBy: { postAt: 'asc' }
+    });
+
+    if (posts.length === 0) {
+        await ctx.reply('📭 ไม่มีโพสต์ที่ตั้งเวลาไว้ครับ', mainMenu);
+        return ctx.answerCbQuery();
+    }
+
+    let msg = '⏳ **รายการที่ตั้งเวลาไว้:**\n\n';
+    const buttons = [];
+
+    for (const post of posts) {
+        // แปลงเวลาให้ดูง่าย (แบบไทย)
+        const timeStr = post.postAt.toLocaleString('th-TH', { 
+            timeZone: 'Asia/Bangkok', 
+            day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+        });
+
+        // ดึงตัวอย่างเนื้อหา
+        let contentPreview = '...';
+        try {
+            const d = JSON.parse(post.data);
+            contentPreview = d.content ? d.content.substring(0, 30) : (d.type === 'photo' ? '[รูปภาพ]' : '...');
+        } catch {}
+
+        msg += `🔹 **ID:** ${post.id} | 📅 ${timeStr}\n📝 ${contentPreview}\n\n`;
+        
+        // ปุ่มลบ
+        buttons.push([Markup.button.callback(`❌ ลบรายการ (ID: ${post.id})`, `DEL_SCH_${post.id}`)]);
+    }
+    
+    buttons.push([Markup.button.callback('🔙 กลับเมนูหลัก', 'BACK_MAIN')]);
+
+    await ctx.replyWithMarkdown(msg, Markup.inlineKeyboard(buttons));
+    await ctx.answerCbQuery();
+});
+
+// Logic ลบโพสต์
+bot.action(/^DEL_SCH_(.+)$/, async (ctx) => {
+    if (!ctx.from) return;
+    const postId = Number(ctx.match[1]);
+
+    try {
+        await prisma.scheduledPost.delete({ where: { id: postId } });
+        await ctx.reply(`✅ ลบรายการ ID: ${postId} เรียบร้อยแล้วครับ!`);
+        // กลับไปหน้าเมนูหลัก
+        await ctx.reply('เลือกเมนูต่อเลยครับ:', mainMenu);
+    } catch (e) {
+        await ctx.reply('❌ ไม่สามารถลบได้ (โพสต์อาจจะถูกส่งไปแล้ว หรือไม่มีอยู่จริง)', mainMenu);
+    }
+    await ctx.answerCbQuery();
+});
+
+bot.action('BACK_MAIN', async (ctx) => {
+    if (!ctx.from) return;
+    await ctx.reply('เลือกเมนูด้านล่าง:', mainMenu);
     await ctx.answerCbQuery();
 });
 
@@ -144,19 +223,17 @@ bot.action(/^SELECT_CH_(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// --- Message Handler (Text/Photo/Forward) ---
+// --- Message Handler ---
 bot.on(['text', 'photo'], async (ctx, next) => {
     const msg = ctx.message as any;
     const user = await getOrCreateUser(ctx);
 
-    // 1. จัดการ Forward Message (เพิ่ม Channel)
     if (msg.forward_from_chat) {
         if (user.state === 'WAITING_FORWARD') {
             const chat = msg.forward_from_chat;
             if (chat.type !== 'channel') return ctx.reply('❌ รองรับเฉพาะ Channel เท่านั้นครับ');
 
             try {
-                // ลองเช็คว่ามีอยู่แล้วไหม
                 const existing = await prisma.channel.findUnique({ where: { telegramId: BigInt(chat.id) } });
                 if (!existing) {
                     await prisma.channel.create({
@@ -166,22 +243,19 @@ bot.on(['text', 'photo'], async (ctx, next) => {
                 } else {
                     await ctx.reply('⚠️ แชนแนลนี้ถูกเพิ่มไปแล้วครับ', mainMenu);
                 }
-                // Reset State
                 await prisma.user.update({ where: { telegramId: BigInt(ctx.from.id) }, data: { state: 'IDLE' } });
             } catch (e) {
                 console.error(e);
                 ctx.reply('❌ เกิดข้อผิดพลาด! บอทอาจจะยังไม่ได้เป็น Admin ใน Channel นั้น');
             }
         }
-        return; // จบการทำงานถ้าเป็น Forward
+        return;
     }
 
-    // 2. จัดการรับเนื้อหา (Create Post)
     if (user.state === 'WAITING_CONTENT') {
         let draftData: any = { type: 'text', content: msg.text || '' };
 
         if (msg.photo) {
-            // เอารูปที่ชัดที่สุด
             draftData = { 
                 type: 'photo', 
                 fileId: msg.photo[msg.photo.length - 1].file_id, 
@@ -197,7 +271,6 @@ bot.on(['text', 'photo'], async (ctx, next) => {
         await ctx.reply('✅ บันทึกเนื้อหาแล้ว!\n\nส่ง **URL Buttons** (หรือพิมพ์ "skip")\nรูปแบบ: `Google - https://google.com`', { parse_mode: 'Markdown' });
     }
     
-    // 3. จัดการรับปุ่ม (Buttons)
     else if (user.state === 'WAITING_BUTTONS') {
         const text = msg.text || '';
         let inlineKeyboard: any[] = [];
@@ -210,14 +283,12 @@ bot.on(['text', 'photo'], async (ctx, next) => {
              });
         }
         
-        // เพิ่มปุ่ม Action
         inlineKeyboard.push([
             Markup.button.callback('🚀 โพสต์เลย', 'CONFIRM_POST'),
             Markup.button.callback('📅 ตั้งเวลาโพสต์', 'BTN_SCHEDULE')
         ]);
         inlineKeyboard.push([Markup.button.callback('❌ ยกเลิก', 'CANCEL_ACTION')]);
 
-        // แสดง Preview
         let draftObj: any = {};
         try { draftObj = JSON.parse(user.draft || '{}'); } catch(e){}
         
@@ -230,7 +301,6 @@ bot.on(['text', 'photo'], async (ctx, next) => {
         }
     }
 
-    // 4. จัดการรับเวลา (Schedule Time)
     else if (user.state === 'WAITING_SCHEDULE_TIME') {
         const timeStr = msg.text;
         const postDate = parseDateTime(timeStr);
@@ -248,13 +318,13 @@ bot.on(['text', 'photo'], async (ctx, next) => {
         await prisma.scheduledPost.create({
             data: {
                 channelId: targetChannel!.telegramId,
-                data: JSON.stringify(draftObj), // draftObj นี้มีปุ่มอยู่แล้วจากการกด BTN_SCHEDULE
+                data: JSON.stringify(draftObj),
                 postAt: postDate,
                 submittedBy: BigInt(ctx.from.id)
             }
         });
 
-        await ctx.reply(`✅ **ตั้งเวลาโพสต์เรียบร้อย!**\nจะโพสต์วันที่: ${timeStr}`, mainMenu);
+        await ctx.reply(`✅ **ตั้งเวลาโพสต์เรียบร้อย!**\nจะโพสต์วันที่: ${timeStr}\n(หากต้องการลบ ให้กดเมนู 'รายการที่ตั้งเวลาไว้')`, mainMenu);
         
         await prisma.user.update({
              where: { telegramId: BigInt(ctx.from.id) },
@@ -263,27 +333,22 @@ bot.on(['text', 'photo'], async (ctx, next) => {
     }
 });
 
-// --- Action Handlers ---
+// --- Actions ---
 
-// กดปุ่มตั้งเวลา
 bot.action('BTN_SCHEDULE', async (ctx) => {
     if (!ctx.from) return;
     
-    // 1. ดึงปุ่มปัจจุบันจาก Preview (msg.reply_markup) เพื่อเอาไปเก็บไว้
     const message = ctx.callbackQuery.message as any;
     const currentMarkup = message?.reply_markup;
 
-    // 2. ลบปุ่มเมนูควบคุม (โพสต์เลย/ตั้งเวลา/ยกเลิก) ออก เก็บไว้แต่ปุ่ม URL
     if (currentMarkup && currentMarkup.inline_keyboard) {
-        // ปกติปุ่มควบคุมจะอยู่ 2 แถวล่างสุด
         currentMarkup.inline_keyboard.pop(); 
         currentMarkup.inline_keyboard.pop();
     }
 
-    // 3. อัปเดต Draft ให้มีข้อมูล buttons
     const user = await getOrCreateUser(ctx);
     let draftObj = JSON.parse(user.draft || '{}');
-    draftObj.buttons = currentMarkup; // บันทึกปุ่ม URL ลงไปใน JSON
+    draftObj.buttons = currentMarkup;
 
     await prisma.user.update({
         where: { telegramId: BigInt(ctx.from.id) },
@@ -297,7 +362,6 @@ bot.action('BTN_SCHEDULE', async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// กดปุ่มโพสต์เลย
 bot.action('CONFIRM_POST', async (ctx) => {
     if (!ctx.from) return;
     const user = await prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) } });
@@ -307,11 +371,9 @@ bot.action('CONFIRM_POST', async (ctx) => {
     
     if (targetChannel) {
         try {
-            // ดึงปุ่ม URL จาก Preview
             const message = ctx.callbackQuery.message as any;
             const replyMarkup = message?.reply_markup;
             
-            // ลบปุ่มควบคุมออก
             if (replyMarkup && replyMarkup.inline_keyboard) {
                 replyMarkup.inline_keyboard.pop();
                 replyMarkup.inline_keyboard.pop();
@@ -356,7 +418,6 @@ bot.action('CANCEL_ACTION', async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Start Bot
 bot.launch().then(() => console.log('Bot Started'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
