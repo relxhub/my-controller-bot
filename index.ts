@@ -229,7 +229,7 @@ bot.action('CONFIRM_POST', async (ctx) => {
         try {
             // *** จุดไคลแม็กซ์: ส่งเข้า Channel จริงๆ ***
             // ดึงปุ่มจากข้อความต้นฉบับ (Context)
-            const replyMarkup = ctx.callbackQuery.message?.reply_markup;
+            const replyMarkup = (ctx.callbackQuery.message as any)?.reply_markup;
             // ลบปุ่ม Confirm/Cancel ออกก่อนส่ง (อันนี้ต้องเขียน Logic กรองปุ่ม แต่อย่างง่ายคือส่ง Text ไปก่อน)
             
             // หมายเหตุ: การดึงปุ่มเดิมมาส่งต้องใช้เทคนิคขั้นสูงนิดนึง
