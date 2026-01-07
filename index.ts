@@ -9,6 +9,28 @@ if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN is missing');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const prisma = new PrismaClient();
+const ADMIN_ID = process.env.ADMIN_ID;
+
+// --- Middleware: Security Check ---
+bot.use(async (ctx, next) => {
+  if (!ctx.from) return next();
+
+  const senderId = String(ctx.from.id);
+
+  // 1. อนุญาตเสมอถ้าเป็น Super Admin ใน .env
+  if (ADMIN_ID && senderId === ADMIN_ID) return next();
+
+  // 2. เช็คว่ามีรายชื่ออยู่ใน Database หรือไม่ (เพิ่มผ่าน Prisma Studio)
+  try {
+    const user = await prisma.user.findUnique({ where: { telegramId: BigInt(senderId) } });
+    if (user) return next();
+  } catch (e) {
+    console.error('DB Error checking user:', e);
+  }
+
+  console.log(`Unauthorized access attempt from: ${senderId} (${ctx.from.username})`);
+  return; // ปฏิเสธการเข้าถึง
+});
 
 // --- Helper Functions ---
 async function getOrCreateUser(ctx: any) {
