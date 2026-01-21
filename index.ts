@@ -88,6 +88,11 @@ cron.schedule('* * * * *', async () => {
                     caption: data.content,
                     ...extraOptions
                 });
+            } else if (data.type === 'video') {
+                await bot.telegram.sendVideo(Number(task.channelId), data.fileId, {
+                    caption: data.content,
+                    ...extraOptions
+                });
             } else {
                 await bot.telegram.sendMessage(Number(task.channelId), data.content, extraOptions);
             }
@@ -159,7 +164,7 @@ bot.action('MENU_SCHEDULED', async (ctx) => {
         let contentPreview = '...';
         try {
             const d = JSON.parse(post.data);
-            contentPreview = d.content ? d.content.substring(0, 30) : (d.type === 'photo' ? '[รูปภาพ]' : '...');
+            contentPreview = d.content ? d.content.substring(0, 30) : (d.type === 'photo' ? '[รูปภาพ]' : (d.type === 'video' ? '[วิดีโอ]' : '...'));
         } catch {}
 
         msg += `🔹 **ID:** ${post.id} | 📅 ${timeStr}\n📝 ${contentPreview}\n\n`;
@@ -241,12 +246,12 @@ bot.action(/^SELECT_CH_(.+)$/, async (ctx) => {
         data: { state: 'WAITING_CONTENT', selectedChannelId: channelId, draft: '' }
     });
 
-    await ctx.reply('📝 ส่ง **ข้อความ** หรือ **รูปภาพ** ที่ต้องการโพสต์มาได้เลยครับ');
+    await ctx.reply('📝 ส่ง **ข้อความ**, **รูปภาพ** หรือ **วิดีโอ** ที่ต้องการโพสต์มาได้เลยครับ');
     await ctx.answerCbQuery();
 });
 
 // --- Message Handler ---
-bot.on(['text', 'photo'], async (ctx, next) => {
+bot.on(['text', 'photo', 'video'], async (ctx, next) => {
     const msg = ctx.message as any;
     const user = await getOrCreateUser(ctx);
 
@@ -283,6 +288,12 @@ bot.on(['text', 'photo'], async (ctx, next) => {
                 fileId: msg.photo[msg.photo.length - 1].file_id, 
                 content: msg.caption || '' 
             };
+        } else if (msg.video) {
+            draftData = {
+                type: 'video',
+                fileId: msg.video.file_id,
+                content: msg.caption || ''
+            };
         }
 
         await prisma.user.update({
@@ -318,6 +329,8 @@ bot.on(['text', 'photo'], async (ctx, next) => {
 
         if (draftObj.type === 'photo') {
             await ctx.replyWithPhoto(draftObj.fileId, { caption: `*Preview:*\n${draftObj.content}`, reply_markup: kbd.reply_markup, parse_mode: 'Markdown' });
+        } else if (draftObj.type === 'video') {
+            await ctx.replyWithVideo(draftObj.fileId, { caption: `*Preview:*\n${draftObj.content}`, reply_markup: kbd.reply_markup, parse_mode: 'Markdown' });
         } else {
             await ctx.replyWithMarkdown(`*Preview:*\n${draftObj.content}`, kbd);
         }
@@ -405,6 +418,12 @@ bot.action('CONFIRM_POST', async (ctx) => {
 
             if (draftObj.type === 'photo') {
                 await ctx.telegram.sendPhoto(Number(targetChannel.telegramId), draftObj.fileId, {
+                    caption: draftObj.content,
+                    reply_markup: replyMarkup,
+                    parse_mode: 'Markdown'
+                });
+            } else if (draftObj.type === 'video') {
+                await ctx.telegram.sendVideo(Number(targetChannel.telegramId), draftObj.fileId, {
                     caption: draftObj.content,
                     reply_markup: replyMarkup,
                     parse_mode: 'Markdown'
