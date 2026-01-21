@@ -245,6 +245,19 @@ bot.action('MENU_CREATE', async (ctx) => {
     await ctx.editMessageText('เลือกแชนแนลที่จะโพสต์:', Markup.inlineKeyboard(buttons));
 });
 
+bot.action(/^SELECT_CH_(.+)$/, async (ctx) => {
+    if (!ctx.from) return;
+    const channelId = ctx.match[1];
+    
+    await prisma.user.update({
+        where: { telegramId: BigInt(ctx.from.id) },
+        data: { state: 'WAITING_CONTENT', selectedChannelId: channelId, draft: '' }
+    });
+
+    await ctx.reply('📝 ส่ง **ข้อความ**, **รูปภาพ** หรือ **วิดีโอ** ที่ต้องการโพสต์มาได้เลยครับ');
+    await ctx.answerCbQuery();
+});
+
 // --- Message Handler ---
 bot.on(['text', 'photo', 'video'], async (ctx, next) => {
     const msg = ctx.message as any;
