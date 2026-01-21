@@ -22,8 +22,7 @@ model Channel {
   id          String   @id @default(uuid())
   telegramId  BigInt   @unique
   title       String
-  addedById   Int
-  addedBy     User     @relation(fields: [addedById], references: [id])
+  managers    User[]
   createdAt   DateTime @default(now())
 }
 

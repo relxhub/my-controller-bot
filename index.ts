@@ -204,14 +204,19 @@ bot.action('BACK_MAIN', async (ctx) => {
 // --- Channel Management ---
 bot.action('MENU_CHANNELS', async (ctx) => {
     if (!ctx.from) return;
-    const user = await getOrCreateUser(ctx);
-    const channels = await prisma.channel.findMany({ where: { addedById: user.id } });
+    // ดึง User พร้อมกับรายชื่อ Channels ที่เขาดูแล
+    const user = await prisma.user.findUnique({
+        where: { telegramId: BigInt(ctx.from.id) },
+        include: { channels: true }
+    });
+
+    if (!user) return;
 
     let msg = '📢 **รายชื่อแชนแนลของคุณ:**\n\n';
-    if (channels.length === 0) msg += '❌ ยังไม่มีแชนแนล\n';
-    else channels.forEach(ch => msg += `✅ ${ch.title}\n`);
+    if (user.channels.length === 0) msg += '❌ ยังไม่มีแชนแนลที่ดูแล\n';
+    else user.channels.forEach(ch => msg += `✅ ${ch.title}\n`);
 
-    msg += '\n**วิธีเพิ่มแชนแนล:**\n1. ดึงบอทเข้า Channel และตั้งเป็น Admin\n2. Forward ข้อความจาก Channel นั้นมาที่บอทนี้';
+    msg += '\n**วิธีเพิ่มแชนแนล:**\n1. ดึงบอทเข้า Channel และตั้งเป็น Admin\n2. Forward ข้อความจาก Channel นั้นมาที่บอทนี้ (เพื่อยืนยันตัวตนว่าคุณอยู่ใน Channel)';
 
     await ctx.replyWithMarkdown(msg);
     await prisma.user.update({
@@ -224,30 +229,20 @@ bot.action('MENU_CHANNELS', async (ctx) => {
 // --- Create Post Flow ---
 bot.action('MENU_CREATE', async (ctx) => {
     if (!ctx.from) return;
-    const user = await getOrCreateUser(ctx);
-    const channels = await prisma.channel.findMany({ where: { addedById: user.id } });
+    // ดึงเฉพาะแชนแนลที่ User คนนี้มีสิทธิ์ดูแล
+    const user = await prisma.user.findUnique({
+        where: { telegramId: BigInt(ctx.from.id) },
+        include: { channels: true }
+    });
 
-    if (channels.length === 0) {
+    if (!user || user.channels.length === 0) {
         return ctx.reply('❌ คุณยังไม่ได้เพิ่ม Channel เลยครับ ไปเมนู "จัดการแชนแนล" ก่อนนะ');
     }
 
-    const buttons = channels.map(ch => [Markup.button.callback(ch.title, `SELECT_CH_${ch.id}`)]);
+    const buttons = user.channels.map(ch => [Markup.button.callback(ch.title, `SELECT_CH_${ch.id}`)]);
     buttons.push([Markup.button.callback('🔙 ยกเลิก', 'CANCEL_ACTION')]);
 
     await ctx.editMessageText('เลือกแชนแนลที่จะโพสต์:', Markup.inlineKeyboard(buttons));
-});
-
-bot.action(/^SELECT_CH_(.+)$/, async (ctx) => {
-    if (!ctx.from) return;
-    const channelId = ctx.match[1];
-    
-    await prisma.user.update({
-        where: { telegramId: BigInt(ctx.from.id) },
-        data: { state: 'WAITING_CONTENT', selectedChannelId: channelId, draft: '' }
-    });
-
-    await ctx.reply('📝 ส่ง **ข้อความ**, **รูปภาพ** หรือ **วิดีโอ** ที่ต้องการโพสต์มาได้เลยครับ');
-    await ctx.answerCbQuery();
 });
 
 // --- Message Handler ---
@@ -261,16 +256,57 @@ bot.on(['text', 'photo', 'video'], async (ctx, next) => {
             if (chat.type !== 'channel') return ctx.reply('❌ รองรับเฉพาะ Channel เท่านั้นครับ');
 
             try {
-                const existing = await prisma.channel.findUnique({ where: { telegramId: BigInt(chat.id) } });
-                if (!existing) {
-                    await prisma.channel.create({
-                        data: { telegramId: BigInt(chat.id), title: chat.title || 'Untitled', addedById: user.id }
-                    });
-                    await ctx.reply(`✅ เพิ่มแชนแนล **"${chat.title}"** เรียบร้อย!`, mainMenu);
-                } else {
-                    await ctx.reply('⚠️ แชนแนลนี้ถูกเพิ่มไปแล้วครับ', mainMenu);
+                // 1. ตรวจสอบว่าบอทเป็นสมาชิกใน Channel นี้หรือไม่ (และมีสิทธิ์โพสต์)
+                // ถ้าบอทไม่ได้อยู่ใน Channel จะ throw error ออกมาเอง
+                const botMember = await ctx.telegram.getChatMember(chat.id, ctx.botInfo.id);
+                if (botMember.status !== 'administrator') {
+                    return ctx.reply('❌ บอทยังไม่ได้เป็น Admin ใน Channel นั้นครับ โปรดตั้งบอทเป็น Admin ก่อน');
                 }
-                await prisma.user.update({ where: { telegramId: BigInt(ctx.from.id) }, data: { state: 'IDLE' } });
+
+                // 2. ตรวจสอบว่า User คนที่ส่งมา เป็น Admin ใน Channel นั้นหรือไม่
+                const userMember = await ctx.telegram.getChatMember(chat.id, ctx.from.id);
+                if (userMember.status !== 'administrator' && userMember.status !== 'creator') {
+                     return ctx.reply('❌ ขออภัย! คุณต้องเป็น **Admin** หรือ **Owner** ของ Channel เท่านั้นถึงจะเพิ่มได้');
+                }
+
+                // ค้นหาว่า Channel นี้มีในระบบหรือยัง
+                const existingChannel = await prisma.channel.findUnique({ 
+                    where: { telegramId: BigInt(chat.id) },
+                    include: { managers: true }
+                });
+
+                if (existingChannel) {
+                    // ตรวจสอบว่า User คนนี้เป็น Manager หรือยัง
+                    const isManager = existingChannel.managers.some(m => m.telegramId === BigInt(ctx.from!.id));
+                    
+                    if (!isManager) {
+                        // เพิ่ม User เข้าไปในรายชื่อ Manager ของ Channel นี้
+                        await prisma.channel.update({
+                            where: { telegramId: BigInt(chat.id) },
+                            data: {
+                                managers: {
+                                    connect: { id: user.id }
+                                }
+                            }
+                        });
+                        await ctx.reply(`✅ คุณได้รับการเพิ่มเป็นผู้ดูแลแชนแนล **"${chat.title}"** เรียบร้อย!`, mainMenu);
+                    } else {
+                        await ctx.reply('⚠️ คุณเป็นผู้ดูแลแชนแนลนี้อยู่แล้วครับ', mainMenu);
+                    }
+                } else {
+                    // สร้าง Channel ใหม่และเชื่อมกับ User คนนี้
+                    await prisma.channel.create({
+                        data: { 
+                            telegramId: BigInt(chat.id), 
+                            title: chat.title || 'Untitled',
+                            managers: {
+                                connect: { id: user.id }
+                            }
+                        }
+                    });
+                    await ctx.reply(`✅ เพิ่มแชนแนลใหม่ **"${chat.title}"** และตั้งคุณเป็นผู้ดูแลเรียบร้อย!`, mainMenu);
+                }
+                await prisma.user.update({ where: { telegramId: BigInt(ctx.from!.id) }, data: { state: 'IDLE' } });
             } catch (e) {
                 console.error(e);
                 ctx.reply('❌ เกิดข้อผิดพลาด! บอทอาจจะยังไม่ได้เป็น Admin ใน Channel นั้น');
